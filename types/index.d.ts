@@ -52,6 +52,9 @@ export type Task = {
   changedAt: number
 }
 
+/** Who the session is signed in as, from `claude auth status`. */
+export type Account = { email: string; plan?: string }
+
 /** The plan the person approved when the session left plan mode. */
 export type Plan = { text: string; approvedAt: number }
 
@@ -66,6 +69,8 @@ declare module 'claude-code' {
       tasks: Task[]
       plan: Plan | null
       isPlanning: boolean
+      account: Account | null
+      isCollapsed: boolean
     }
   }
 }

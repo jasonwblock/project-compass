@@ -1,9 +1,43 @@
 {
   "name": "project-compass",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Side pane, refreshed after each turn: project objective, top next steps, open risks and estimated completion",
-  "author": { "name": "jasonwblock", "url": "https://github.com/jasonwblock" },
+  "author": {
+    "name": "jasonwblock",
+    "url": "https://github.com/jasonwblock"
+  },
   "repository": "https://github.com/jasonwblock/project-compass",
   "license": "MIT",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "refresh": {
+      "type": "string",
+      "title": "Refresh",
+      "description": "When the compass reassesses the project; each assessment is one model call. turn: after every turn. interval: every few turns (see Refresh interval). edits: after a turn that edited files. manual: only when you run /compass refresh.",
+      "default": "turn",
+      "options": [
+        "turn",
+        "interval",
+        "edits",
+        "manual"
+      ]
+    },
+    "refreshInterval": {
+      "type": "number",
+      "title": "Refresh interval",
+      "description": "How many turns between assessments when Refresh is interval.",
+      "default": 3
+    },
+    "account": {
+      "type": "string",
+      "title": "Account line",
+      "description": "What shows under the project name. full: your email and plan. plan: the plan alone. off: nothing, and the CLI is never asked who is signed in.",
+      "default": "full",
+      "options": [
+        "full",
+        "plan",
+        "off"
+      ]
+    }
+  }
 }

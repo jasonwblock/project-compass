@@ -4,6 +4,8 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 import type { Change, Plan, RiskKind, Snapshot, Step, StepStatus } from '../types'
 import { buildPrompt, parseSnapshot, upgradeSnapshot } from './parse'
 import { addUsage, dollars, priceOf } from './pricing'
+import { contextTone, parseAccount } from './session'
+import { EDIT_TOOLS, readSettings, refreshLabel, shouldRefresh } from './settings'
 import { fromTodos, stepsFromTasks, taskCreated, taskUpdated, workContext } from './work'
 
 const PANE = 'project-compass'
@@ -19,6 +21,11 @@ const error = atom({ plugin: 'project-compass', key: 'error' } as const, null)
 const tasks = atom({ plugin: 'project-compass', key: 'tasks' } as const, [])
 const plan = atom({ plugin: 'project-compass', key: 'plan' } as const, null)
 const isPlanning = atom({ plugin: 'project-compass', key: 'isPlanning' } as const, false)
+const account = atom({ plugin: 'project-compass', key: 'account' } as const, null)
+const isCollapsed = atom({ plugin: 'project-compass', key: 'isCollapsed' } as const, false)
+
+/** The collapsed choice is the person's, kept across sessions and projects. */
+const COLLAPSED_KEY = 'collapsed'
 const EMPTY_USAGE = { runs: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, unpriced: 0 }
 const projectUsage = atom({ plugin: 'project-compass', key: 'projectUsage' } as const, EMPTY_USAGE)
 const usage = atom({ plugin: 'project-compass', key: 'usage' } as const, {
@@ -58,6 +65,10 @@ const bar = (percent: number, width: number) => {
 const count = (n: number) =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)}k` : String(n)
 
+/** Whole thousands or millions, no decimals: the context line's rough figure. */
+const roughCount = (n: number) =>
+  n >= 1_000_000 ? `${Math.round(n / 1_000_000)}M` : n >= 1_000 ? `${Math.round(n / 1_000)}k` : String(n)
+
 const ago = (then: number, now: number) => {
   if (then <= 0) return 'updated earlier'
   const seconds = Math.max(0, Math.round((now - then) / 1000))
@@ -73,12 +84,28 @@ const ago = (then: number, now: number) => {
 const costText = (cost: number, unpriced: number, runs: number) =>
   unpriced === runs ? 'API cost n/a' : `≈${dollars(cost)} API${unpriced > 0 ? ` (${unpriced} unpriced)` : ''}`
 
+/** Who the session is signed in as: the CLI's own answer, read once a session. */
+async function loadAccount($: EngineInterface) {
+  try {
+    const run = await $.process.run(['claude', 'auth', 'status', '--json'], { timeoutMs: 20_000 })
+    const found = run.exitCode === 0 ? parseAccount(run.stdout) : null
+    await update($, account, () => found)
+  } catch {
+    // No CLI on the path, or it timed out: the header shows no account line.
+  }
+}
+
 // Only the newest refresh may write; an older one that lands late is dropped.
 let generation = 0
 let ticker: Timer | undefined
+// What happened since the last assessment, for the refresh setting.
+let turnsSinceRefresh = 0
+let isEditedSinceRefresh = false
 
 async function refresh($: EngineInterface) {
   const mine = ++generation
+  turnsSinceRefresh = 0
+  isEditedSinceRefresh = false
   await update($, isUpdating, () => true)
   try {
     const previous = await read($, snapshot)
@@ -113,13 +140,20 @@ async function refresh($: EngineInterface) {
   }
 }
 
-export const register: Register = on => {
+async function toggleCollapsed($: EngineInterface, collapse?: boolean) {
+  await update($, isCollapsed, now => collapse ?? !now)
+  await $.store.set(COLLAPSED_KEY, await read($, isCollapsed))
+}
+
+export const register: Register = (on, options) => {
+  const settings = readSettings(options)
+
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     await $.command.register({
       name: 'compass',
       description: 'Open the project compass pane',
-      argumentHint: '[refresh | reset]',
+      argumentHint: '[refresh | reset | collapse | expand]',
     })
 
     // What this session holds, or else what the last session in this project saved,
@@ -133,7 +167,12 @@ export const register: Register = on => {
     }
     const isOldShape = held !== null && typeof (held as { title?: unknown }).title !== 'string'
     // Nothing yet, or an assessment with no title: assess now, not after the next turn.
-    if ((current === null || isOldShape) && (await $.session.turns()) > 0) void refresh($)
+    const isAutomatic = settings.refresh !== 'manual'
+    if (isAutomatic && (current === null || isOldShape) && (await $.session.turns()) > 0) void refresh($)
+
+    if (settings.account !== 'off' && (await read($, account)) === null) void loadAccount($)
+    const collapsed = await $.store.get(COLLAPSED_KEY)
+    if (typeof collapsed === 'boolean') await update($, isCollapsed, () => collapsed)
 
     ticker?.cancel()
     ticker = $.clock.every(TICK_MS, () => $.ui.invalidate('ui.render'))
@@ -147,13 +186,23 @@ export const register: Register = on => {
     // The project's own spend: every turn, the main loop's and its subagents'.
     const used = e.usage
     if (used) await update($, projectUsage, sum => addUsage(sum, used, priceOf(used.model, used)))
-    if (e.agentId === undefined && e.reason === 'answer') void refresh($)
+    if (e.agentId === undefined && e.reason === 'answer') {
+      turnsSinceRefresh += 1
+      if (shouldRefresh(settings, { turns: turnsSinceRefresh, isEdited: isEditedSinceRefresh })) void refresh($)
+    }
 
     return done
   })
 
   // The hooks below only watch: if one fails, what is beneath stands (their `.catch`).
   // `next(e)` after the hook already called it replays that answer, so nothing runs twice.
+
+  // A file edit by any loop, for the `edits` refresh setting.
+  on('tool.call', async ($, e, next) => {
+    const r = await next(e)
+    if (EDIT_TOOLS.has(e.tool) && ran(r)) isEditedSinceRefresh = true
+    return r
+  }).catch(($, e, next) => next(e))
 
   // Plan mode as the settings hooks see it: at each prompt (the mode the turn runs in) and as each turn stops.
   on('classic.UserPromptSubmit', async ($, e, next) => {
@@ -220,6 +269,10 @@ export const register: Register = on => {
       void refresh($)
       return { text: 'Project compass: refreshing.' }
     }
+    if (arg === 'collapse' || arg === 'expand') {
+      await toggleCollapsed($, arg === 'collapse')
+      return { text: `Project compass ${arg === 'collapse' ? 'collapsed' : 'expanded'}.` }
+    }
     if (arg === 'reset') {
       generation += 1
       await update($, snapshot, () => null)
@@ -228,14 +281,19 @@ export const register: Register = on => {
       await update($, plan, () => null)
       await $.store.delete(await storeKey($))
       await $.store.delete(await planKey($))
-      return { text: 'Project compass: cleared. It reassesses after the next turn.' }
+      return {
+        text:
+          settings.refresh === 'manual'
+            ? 'Project compass: cleared. Run /compass refresh to reassess.'
+            : 'Project compass: cleared. It reassesses after the next turn.',
+      }
     }
 
     return { text: 'Project compass pane opened.' }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
     const shot = await read($, snapshot)
     const busy = await read($, isUpdating)
     const failed = await read($, error)
@@ -244,7 +302,23 @@ export const register: Register = on => {
     const taskList = await read($, tasks)
     const approvedPlan = await read($, plan)
     const planning = await read($, isPlanning)
+    const signedIn = settings.account === 'off' ? null : await read($, account)
+    const collapsed = await read($, isCollapsed)
     const now = await $.clock.now()
+    // The context window as the status line has it; unknown before the first response.
+    let context: { remaining: number; left: number; window: number } | null = null
+    try {
+      const { context: window } = await $.session.usage()
+      if (window.percent !== undefined) {
+        context = {
+          remaining: Math.max(0, 100 - window.percent),
+          left: Math.max(0, window.window - (window.tokens ?? 0)),
+          window: window.window,
+        }
+      }
+    } catch {
+      // No usage to read (a host without it): the line says so.
+    }
     // One column of margin each side, inside the pane.
     const columns = Math.max(20, e.props.bodyColumns - 2)
     const isFresh = shot !== null && now - shot.updatedAt < FRESH_MS
@@ -278,10 +352,55 @@ export const register: Register = on => {
         </Box>
       </Box>
     )
+    const CONTEXT_LABEL = 'Context Remaining'
+    const contextLeft = context ? `  ${roughCount(context.left)} of ${roughCount(context.window)}` : ''
+    const contextWidth = Math.max(6, Math.min(20, columns - CONTEXT_LABEL.length - 2 - 5 - contextLeft.length))
+    const contextLine = (
+      <Box>
+        <Box width={CONTEXT_LABEL.length + 2} flexShrink={0}>
+          <Text bold>{CONTEXT_LABEL}</Text>
+        </Box>
+        {context === null ? (
+          <Text dimColor>not known yet</Text>
+        ) : (
+          <Box flexShrink={1}>
+            <Text color={contextTone(context.remaining)}>{bar(context.remaining, contextWidth)}</Text>
+            <Text bold>{` ${context.remaining}%`}</Text>
+            <Text dimColor>{contextLeft}</Text>
+          </Box>
+        )}
+      </Box>
+    )
+    const accountText =
+      signedIn === null
+        ? null
+        : settings.account === 'plan'
+          ? signedIn.plan
+            ? `${signedIn.plan} plan`
+            : null
+          : signedIn.plan
+            ? `${signedIn.email} · ${signedIn.plan}`
+            : signedIn.email
+    const accountLine = accountText ? (
+      <Text dimColor wrap="truncate-end">
+        {accountText}
+      </Text>
+    ) : null
+    const collapseButton = (
+      <Button
+        key="collapse"
+        plain
+        label={collapsed ? '+' : '−'}
+        hotkey="c"
+        onPress={() => toggleCollapsed($)}
+      />
+    )
+
     const stats = (
       <Box flexDirection="column">
         {divider}
         {heading('Stats')}
+        {contextLine}
         {statLine('Project', projectSpent, 'turn')}
         {statLine('Compass', spent, 'run')}
       </Box>
@@ -292,15 +411,30 @@ export const register: Register = on => {
     ) : failed ? (
       <Text color="error">{failed}</Text>
     ) : shot ? (
-      <Text dimColor>{`${ago(shot.updatedAt, now)} · turn ${shot.turn}`}</Text>
+      <Text dimColor>{`${ago(shot.updatedAt, now)} · turn ${shot.turn} · ${refreshLabel(settings)}`}</Text>
     ) : null
 
     if (shot === null) {
       return (
         <Box flexDirection="column" paddingX={1}>
-          <Text dimColor>No assessment yet. It appears after the next turn ends.</Text>
-          {footer}
-          {stats}
+          <Box justifyContent="space-between">
+            <Box flexDirection="column" flexShrink={1}>
+              <Text bold>{TITLE}</Text>
+              {accountLine}
+            </Box>
+            <Box flexShrink={0}>{collapseButton}</Box>
+          </Box>
+          {!collapsed && (
+            <Box flexDirection="column">
+              <Text dimColor>
+                {settings.refresh === 'manual'
+                  ? 'No assessment yet. Run /compass refresh.'
+                  : 'No assessment yet. It appears after the next turn ends.'}
+              </Text>
+              {footer}
+              {stats}
+            </Box>
+          )}
         </Box>
       )
     }
@@ -309,27 +443,15 @@ export const register: Register = on => {
     const delta = isFresh && shot.delta ? shot.delta : 0
     const percent = `${shot.completion}%`
     const deltaText = delta > 0 ? ` ▲${delta}` : delta < 0 ? ` ▼${-delta}` : ''
-    const barWidth = Math.max(6, Math.min(20, columns - shot.title.length - percent.length - deltaText.length - 3))
+    const barWidth = Math.max(6, Math.min(20, columns - shot.title.length - percent.length - deltaText.length - 6))
 
     // The task list, while it has open items, is the authority on what runs and what is next.
     const taskSteps = stepsFromTasks(taskList, now, FRESH_MS)
     const steps: Step[] = taskSteps ?? shot.steps
     const source = taskSteps ? 'from task list' : approvedPlan ? 'from approved plan' : null
 
-    return (
-      <Box flexDirection="column" paddingX={1}>
-        <Box justifyContent="space-between">
-          <Box flexShrink={1}>
-            <Text bold wrap="truncate-end">
-              {shot.title}
-            </Text>
-          </Box>
-          <Box flexShrink={0}>
-            <Text color={tone}>{bar(shot.completion, barWidth)}</Text>
-            <Text bold>{` ${percent}`}</Text>
-            {deltaText && <Text color={delta > 0 ? 'success' : 'error'}>{deltaText}</Text>}
-          </Box>
-        </Box>
+    const body = (
+      <Box flexDirection="column">
         {divider}
 
         <Box>
@@ -357,5 +479,28 @@ export const register: Register = on => {
         {stats}
       </Box>
     )
+
+    return (
+      <Box flexDirection="column" paddingX={1}>
+        <Box justifyContent="space-between">
+          <Box flexDirection="column" flexShrink={1}>
+            <Text bold wrap="truncate-end">
+              {shot.title}
+            </Text>
+            {accountLine}
+          </Box>
+          <Box flexShrink={0}>
+            <Text color={tone}>{bar(shot.completion, barWidth)}</Text>
+            <Text bold>{` ${percent}`}</Text>
+            {deltaText && <Text color={delta > 0 ? 'success' : 'error'}>{deltaText}</Text>}
+            <Text> </Text>
+            {collapseButton}
+          </Box>
+        </Box>
+        {collapsed && steps[0] && row(STEP_ICONS[steps[0].status], steps[0].text, undefined, steps[0].status === 'active')}
+        {!collapsed && body}
+      </Box>
+    )
   })
 }
+
