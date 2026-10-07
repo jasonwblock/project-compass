@@ -1,0 +1,15 @@
+{
+  "name": "project-compass",
+  "description": "Project Compass, a Claude Code mod: a live side pane with the project's objective, next steps, risks and estimated completion",
+  "owner": {
+    "name": "jasonwblock",
+    "url": "https://github.com/jasonwblock"
+  },
+  "plugins": [
+    {
+      "name": "project-compass",
+      "source": "./",
+      "description": "Side pane, refreshed after each turn: project objective, top next steps, open risks and estimated completion"
+    }
+  ]
+}

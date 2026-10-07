@@ -1,0 +1,6 @@
+# Written by Claude Code each time it loads the mod
+.claude-plugin/types/
+node_modules/
+
+# Stray compiler output: the hooks are loaded from their .ts/.tsx sources
+*.js

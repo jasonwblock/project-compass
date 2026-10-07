@@ -1,0 +1,9 @@
+{
+  "name": "project-compass",
+  "version": "0.1.0",
+  "description": "Side pane, refreshed after each turn: project objective, top next steps, open risks and estimated completion",
+  "author": { "name": "jasonwblock", "url": "https://github.com/jasonwblock" },
+  "repository": "https://github.com/jasonwblock/project-compass",
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
