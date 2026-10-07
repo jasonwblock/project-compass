@@ -32,7 +32,6 @@ Answer `y` to add the marketplace, then pick the user scope.
 
 - The pane opens by itself on a terminal at least 144 columns wide; otherwise type `/compass`.
 - `/compass refresh` reassesses now; `/compass reset` clears the saved assessment and plan for the project.
-- Collapse the pane to its header and current step with the `−` button (or `c` while the pane has focus), or `/compass collapse` and `/compass expand`. It stays the way you leave it.
 
 ## Settings
 

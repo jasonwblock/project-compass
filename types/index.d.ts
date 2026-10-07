@@ -70,7 +70,6 @@ declare module 'claude-code' {
       plan: Plan | null
       isPlanning: boolean
       account: Account | null
-      isCollapsed: boolean
     }
   }
 }

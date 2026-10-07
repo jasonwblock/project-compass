@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+- Removed collapsing: Claude Code keeps the side panel's width, so the pane could not narrow itself to a rail. The `−` button and `/compass collapse` / `/compass expand` are gone.
+
 ## 0.2.0
 
 - Header shows the signed-in account under the project name (setting: **Account line**: `full`, `plan` or `off`).

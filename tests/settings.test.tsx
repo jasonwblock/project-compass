@@ -25,7 +25,7 @@ const REPLY = JSON.stringify({
   title: 'Compass Mod',
   objective: 'Build a Claude Code mod that tracks project progress.',
   steps: [
-    { text: 'Write the collapse button', status: 'active' },
+    { text: 'Write the parser', status: 'active' },
     { text: 'Ship 0.2.0', status: 'next' },
   ],
   risks: [{ text: 'Desktop drawing untested', kind: 'unknown' }],
@@ -43,7 +43,11 @@ const engine = (on: On) => {
   const calls = { forks: 0, runs: 0 }
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('command.register', () => ({ value: { command: 'compass' } }) as never)
-  on('ui.open', () => ({ value: {} }) as never)
+  const opens: unknown[] = []
+  on('ui.open', ($, e) => {
+    opens.push(e)
+    return { value: { isPlaced: true } } as never
+  })
   on('turn.complete', ($, e) => ({ text: e.answer }))
   on('session.turns', () => ({ value: 1 }) as never)
   on('session.root', () => ({ value: '/work/project' }) as never)
@@ -67,7 +71,7 @@ const engine = (on: On) => {
     await clock.settle()
   }
 
-  return { clock, calls, start, turn }
+  return { clock, calls, start, turn, opens }
 }
 
 describe('readSettings', () => {
@@ -137,25 +141,6 @@ test('account off never runs the CLI', { options: { account: 'off' } }, async ($
   const { calls, start } = engine(on)
   await start($)
   expect(calls.runs).toBe(0)
-})
-
-test('the pane collapses and expands, on the terminal and the desktop', async ($, on) => {
-  const { turn } = engine(on)
-  await turn($, 1)
-  for (const surface of SURFACES) {
-    const ui = await $.ui.mount(pane(surface))
-    expect(await ui.find({ type: 'Text', text: 'NEXT STEPS' })).toBeDefined()
-
-    await ui.press({ key: 'collapse' })
-    expect(await ui.find({ type: 'Text', text: 'Compass Mod' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'Write the collapse button' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'NEXT STEPS' })).toBeUndefined()
-    expect(await ui.find({ type: 'Text', text: 'STATS' })).toBeUndefined()
-
-    await ui.press({ key: 'collapse' })
-    expect(await ui.find({ type: 'Text', text: 'NEXT STEPS' })).toBeDefined()
-    await ui.unmount()
-  }
 })
 
 test('the full pane draws on the desktop too', async ($, on) => {

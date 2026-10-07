@@ -22,10 +22,6 @@ const tasks = atom({ plugin: 'project-compass', key: 'tasks' } as const, [])
 const plan = atom({ plugin: 'project-compass', key: 'plan' } as const, null)
 const isPlanning = atom({ plugin: 'project-compass', key: 'isPlanning' } as const, false)
 const account = atom({ plugin: 'project-compass', key: 'account' } as const, null)
-const isCollapsed = atom({ plugin: 'project-compass', key: 'isCollapsed' } as const, false)
-
-/** The collapsed choice is the person's, kept across sessions and projects. */
-const COLLAPSED_KEY = 'collapsed'
 const EMPTY_USAGE = { runs: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, unpriced: 0 }
 const projectUsage = atom({ plugin: 'project-compass', key: 'projectUsage' } as const, EMPTY_USAGE)
 const usage = atom({ plugin: 'project-compass', key: 'usage' } as const, {
@@ -140,11 +136,6 @@ async function refresh($: EngineInterface) {
   }
 }
 
-async function toggleCollapsed($: EngineInterface, collapse?: boolean) {
-  await update($, isCollapsed, now => collapse ?? !now)
-  await $.store.set(COLLAPSED_KEY, await read($, isCollapsed))
-}
-
 export const register: Register = (on, options) => {
   const settings = readSettings(options)
 
@@ -153,7 +144,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'compass',
       description: 'Open the project compass pane',
-      argumentHint: '[refresh | reset | collapse | expand]',
+      argumentHint: '[refresh | reset]',
     })
 
     // What this session holds, or else what the last session in this project saved,
@@ -171,8 +162,6 @@ export const register: Register = (on, options) => {
     if (isAutomatic && (current === null || isOldShape) && (await $.session.turns()) > 0) void refresh($)
 
     if (settings.account !== 'off' && (await read($, account)) === null) void loadAccount($)
-    const collapsed = await $.store.get(COLLAPSED_KEY)
-    if (typeof collapsed === 'boolean') await update($, isCollapsed, () => collapsed)
 
     ticker?.cancel()
     ticker = $.clock.every(TICK_MS, () => $.ui.invalidate('ui.render'))
@@ -269,10 +258,6 @@ export const register: Register = (on, options) => {
       void refresh($)
       return { text: 'Project compass: refreshing.' }
     }
-    if (arg === 'collapse' || arg === 'expand') {
-      await toggleCollapsed($, arg === 'collapse')
-      return { text: `Project compass ${arg === 'collapse' ? 'collapsed' : 'expanded'}.` }
-    }
     if (arg === 'reset') {
       generation += 1
       await update($, snapshot, () => null)
@@ -293,7 +278,7 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const { Box, Text } = $.ui.resolve(e)
     const shot = await read($, snapshot)
     const busy = await read($, isUpdating)
     const failed = await read($, error)
@@ -303,7 +288,6 @@ export const register: Register = (on, options) => {
     const approvedPlan = await read($, plan)
     const planning = await read($, isPlanning)
     const signedIn = settings.account === 'off' ? null : await read($, account)
-    const collapsed = await read($, isCollapsed)
     const now = await $.clock.now()
     // The context window as the status line has it; unknown before the first response.
     let context: { remaining: number; left: number; window: number } | null = null
@@ -386,15 +370,6 @@ export const register: Register = (on, options) => {
         {accountText}
       </Text>
     ) : null
-    const collapseButton = (
-      <Button
-        key="collapse"
-        plain
-        label={collapsed ? '+' : '−'}
-        hotkey="c"
-        onPress={() => toggleCollapsed($)}
-      />
-    )
 
     const stats = (
       <Box flexDirection="column">
@@ -417,24 +392,15 @@ export const register: Register = (on, options) => {
     if (shot === null) {
       return (
         <Box flexDirection="column" paddingX={1}>
-          <Box justifyContent="space-between">
-            <Box flexDirection="column" flexShrink={1}>
-              <Text bold>{TITLE}</Text>
-              {accountLine}
-            </Box>
-            <Box flexShrink={0}>{collapseButton}</Box>
-          </Box>
-          {!collapsed && (
-            <Box flexDirection="column">
-              <Text dimColor>
-                {settings.refresh === 'manual'
-                  ? 'No assessment yet. Run /compass refresh.'
-                  : 'No assessment yet. It appears after the next turn ends.'}
-              </Text>
-              {footer}
-              {stats}
-            </Box>
-          )}
+          <Text bold>{TITLE}</Text>
+          {accountLine}
+          <Text dimColor>
+            {settings.refresh === 'manual'
+              ? 'No assessment yet. Run /compass refresh.'
+              : 'No assessment yet. It appears after the next turn ends.'}
+          </Text>
+          {footer}
+          {stats}
         </Box>
       )
     }
@@ -443,7 +409,7 @@ export const register: Register = (on, options) => {
     const delta = isFresh && shot.delta ? shot.delta : 0
     const percent = `${shot.completion}%`
     const deltaText = delta > 0 ? ` ▲${delta}` : delta < 0 ? ` ▼${-delta}` : ''
-    const barWidth = Math.max(6, Math.min(20, columns - shot.title.length - percent.length - deltaText.length - 6))
+    const barWidth = Math.max(6, Math.min(20, columns - shot.title.length - percent.length - deltaText.length - 3))
 
     // The task list, while it has open items, is the authority on what runs and what is next.
     const taskSteps = stepsFromTasks(taskList, now, FRESH_MS)
@@ -493,12 +459,9 @@ export const register: Register = (on, options) => {
             <Text color={tone}>{bar(shot.completion, barWidth)}</Text>
             <Text bold>{` ${percent}`}</Text>
             {deltaText && <Text color={delta > 0 ? 'success' : 'error'}>{deltaText}</Text>}
-            <Text> </Text>
-            {collapseButton}
           </Box>
         </Box>
-        {collapsed && steps[0] && row(STEP_ICONS[steps[0].status], steps[0].text, undefined, steps[0].status === 'active')}
-        {!collapsed && body}
+        {body}
       </Box>
     )
   })
